@@ -24,6 +24,9 @@ doesn't already cover MIN_RESULTS distinct sentences - exact matches always
 score at least as high as a fuzzy match of the same query, so there's no
 ranking benefit to paying for 1-edit variation generation once we already
 have enough.
+
+MatchCandidate's shape (sentence_id, edit_type, edit_position) is the
+contract core.scoring.rank_candidates consumes - see core/scoring.py.
 """
 from dataclasses import dataclass
 from typing import List, Optional, Protocol, Set
@@ -45,11 +48,11 @@ class SupportsCandidateIndex(Protocol):
 
 @dataclass(frozen=True)
 class MatchCandidate:
-    sentence: SentenceRecord
+    sentence_id: int
     offset: int
     match_length: int
-    edit_type: str      # "exact" | "substitution" | "insertion" | "deletion"
-    edit_position: int  # 1-based position in the query; 0 for exact matches
+    edit_type: str                # "exact" | "substitution" | "insertion" | "deletion"
+    edit_position: Optional[int]  # 1-based position in the query; None for exact matches
 
 
 def search(query: str, index: SupportsCandidateIndex) -> List[MatchCandidate]:
@@ -57,8 +60,8 @@ def search(query: str, index: SupportsCandidateIndex) -> List[MatchCandidate]:
     only if the exact match doesn't already cover MIN_RESULTS sentences."""
     normalized_query = normalize_text(query)
 
-    candidates = _find_occurrences(normalized_query, index, "exact", 0)
-    if len({c.sentence.sentence_id for c in candidates}) >= MIN_RESULTS:
+    candidates = _find_occurrences(normalized_query, index, "exact", None)
+    if len({c.sentence_id for c in candidates}) >= MIN_RESULTS:
         return candidates
 
     for variation in generate_variations(normalized_query):
@@ -70,7 +73,7 @@ def search(query: str, index: SupportsCandidateIndex) -> List[MatchCandidate]:
 
 
 def _find_occurrences(
-    text: str, index: SupportsCandidateIndex, edit_type: str, edit_position: int
+    text: str, index: SupportsCandidateIndex, edit_type: str, edit_position: Optional[int]
 ) -> List[MatchCandidate]:
     matches: List[MatchCandidate] = []
     for sentence_id in index.get_candidate_ids(text):
@@ -78,7 +81,7 @@ def _find_occurrences(
         if sentence is None:
             continue
         for offset in _find_all_offsets(sentence.normalized_text, text):
-            matches.append(MatchCandidate(sentence, offset, len(text), edit_type, edit_position))
+            matches.append(MatchCandidate(sentence_id, offset, len(text), edit_type, edit_position))
     return matches
 
 

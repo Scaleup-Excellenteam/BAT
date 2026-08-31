@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 from core.indexer import DataManager
+from core.normalizer import normalize_text
+from core.scoring import rank_candidates
 from core.search_engine import search
 
 
@@ -49,6 +51,19 @@ class TestSearchIntegration(unittest.TestCase):
         results = search("or nt", self.data_manager)
         insertions = [r for r in results if r.edit_type == "insertion"]
         self.assertTrue(any(r.edit_position == 5 for r in insertions))
+
+    def test_full_pipeline_with_scoring(self):
+        # search() -> rank_candidates() is the real handoff cli/main.py
+        # relies on - this is what actually proves MatchCandidate's shape
+        # satisfies core.scoring's documented contract, not just that
+        # search() runs on its own.
+        query = "to be"
+        matches = search(query, self.data_manager)
+        results = rank_candidates(normalize_text(query), matches, self.data_manager.get_sentence)
+
+        self.assertTrue(results)
+        self.assertEqual(results[0].completed_sentence, "To be or not to be, that is the question.")
+        self.assertEqual(results[0].score, 2 * len(query))
 
 
 if __name__ == "__main__":

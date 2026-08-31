@@ -78,7 +78,7 @@ def test_search_finds_exact_match():
     assert len(exact) == 2
     assert {r.offset for r in exact} == {0, 13}
     assert all(r.match_length == len("to be") for r in exact)
-    assert all(r.edit_position == 0 for r in exact)
+    assert all(r.edit_position is None for r in exact)
 
 
 def test_search_finds_substitution_match():
@@ -157,5 +157,5 @@ def test_search_skips_fuzzy_variations_once_exact_has_enough_results():
 
     results = search("cat", index)
 
-    assert len({r.sentence.sentence_id for r in results}) == 5
+    assert len({r.sentence_id for r in results}) == 5
     assert all(r.edit_type == "exact" for r in results)
