@@ -1,8 +1,8 @@
-from typing import List, Set
+from typing import List, Optional, Set
 
 from core.generator import generate_variations
 from core.models import SentenceRecord
-from core.search_engine import KMER_SIZE, search
+from core.search_engine import search
 
 
 def test_generate_variations_substitution():
@@ -36,21 +36,26 @@ def test_generate_variations_no_duplicated_original():
 
 
 class FakeIndex:
-    """Stand-in for core.indexer's Index, matching its real contract:
-    an n-gram candidate filter (get_candidate_ids) plus the sentence list -
-    NOT a direct exact-match/offset lookup (that's search_engine's job)."""
+    """Deliberately over-inclusive stand-in for core.indexer.DataManager.
+
+    The real get_candidate_ids narrows down by a k-mer of the query, but
+    returning every sentence id is still a valid (if inefficient)
+    implementation of the same contract - it's a candidate filter, not a
+    verified match. This isolates these tests to search_engine's own
+    confirm+offset+tag logic rather than DataManager's indexing details."""
 
     def __init__(self, sentences: List[SentenceRecord]):
-        self.sentences = sentences
-        self._kmer_to_ids: dict[str, Set[int]] = {}
-        for sentence in sentences:
-            text = sentence.normalized_text
-            for i in range(len(text) - KMER_SIZE + 1):
-                kmer = text[i:i + KMER_SIZE]
-                self._kmer_to_ids.setdefault(kmer, set()).add(sentence.sentence_id)
+        self._sentences = sentences
 
-    def get_candidate_ids(self, kmer: str) -> Set[int]:
-        return self._kmer_to_ids.get(kmer, set())
+    def get_candidate_ids(self, query: str) -> Set[int]:
+        if not query:
+            return set()
+        return {s.sentence_id for s in self._sentences}
+
+    def get_sentence(self, sentence_id: int) -> Optional[SentenceRecord]:
+        if 0 <= sentence_id < len(self._sentences):
+            return self._sentences[sentence_id]
+        return None
 
 
 def _make_sentence(text: str) -> SentenceRecord:
@@ -112,9 +117,10 @@ def test_search_finds_insertion_match():
     assert any(r.offset == 0 and r.edit_position == 5 for r in insertions)
 
 
-def test_search_falls_back_to_full_scan_for_short_queries():
-    # "hi" is shorter than KMER_SIZE, so no k-mer can be formed for it -
-    # search must still find it via the full-scan fallback.
+def test_search_finds_short_query():
+    # DataManager handles short queries (< kmer_size) with its own
+    # full-scan fallback - search_engine just needs to pass them through
+    # and confirm the match like any other candidate.
     sentence = _make_sentence("well hi there")
     index = FakeIndex([sentence])
 
