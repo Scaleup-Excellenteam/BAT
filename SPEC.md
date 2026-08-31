@@ -78,3 +78,4 @@ class SentenceRecord:
     normalized_text: str
     source_path: str
     offset: int
+    
