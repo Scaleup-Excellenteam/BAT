@@ -18,12 +18,21 @@ search_engine does not deduplicate or rank candidates - a query and its
 1-edit variations can match the same sentence more than once (e.g. via two
 different edits, or the same edit at different offsets). Deduplication,
 scoring and top-5 ranking happen downstream in core.scoring / cli.
+
+Fuzzy variations are only generated and checked if the exact match alone
+doesn't already cover MIN_RESULTS distinct sentences - exact matches always
+score at least as high as a fuzzy match of the same query, so there's no
+ranking benefit to paying for 1-edit variation generation once we already
+have enough.
 """
 from dataclasses import dataclass
 from typing import List, Optional, Protocol, Set
 
 from core.generator import generate_variations
 from core.models import SentenceRecord
+from core.normalizer import normalize_text
+
+MIN_RESULTS = 5
 
 
 class SupportsCandidateIndex(Protocol):
@@ -44,12 +53,15 @@ class MatchCandidate:
 
 
 def search(query: str, index: SupportsCandidateIndex) -> List[MatchCandidate]:
-    """Find every exact and 1-edit-fuzzy occurrence of query in the index."""
-    candidates: List[MatchCandidate] = []
+    """Find exact matches for query, falling back to 1-edit-fuzzy matches
+    only if the exact match doesn't already cover MIN_RESULTS sentences."""
+    normalized_query = normalize_text(query)
 
-    candidates.extend(_find_occurrences(query, index, "exact", 0))
+    candidates = _find_occurrences(normalized_query, index, "exact", 0)
+    if len({c.sentence.sentence_id for c in candidates}) >= MIN_RESULTS:
+        return candidates
 
-    for variation in generate_variations(query):
+    for variation in generate_variations(normalized_query):
         candidates.extend(
             _find_occurrences(variation.text, index, variation.edit_type, variation.position)
         )

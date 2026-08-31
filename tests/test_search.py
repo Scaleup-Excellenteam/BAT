@@ -58,9 +58,9 @@ class FakeIndex:
         return None
 
 
-def _make_sentence(text: str) -> SentenceRecord:
+def _make_sentence(text: str, sentence_id: int = 0) -> SentenceRecord:
     return SentenceRecord(
-        sentence_id=0,
+        sentence_id=sentence_id,
         original_text=text,
         normalized_text=text,
         source_path="dummy.txt",
@@ -137,3 +137,25 @@ def test_search_no_match_returns_empty_for_unrelated_sentences():
     results = search("xyzzy", index)
 
     assert results == []
+
+
+def test_search_normalizes_the_raw_query():
+    sentence = _make_sentence("to be or not to be")
+    index = FakeIndex([sentence])
+
+    # search() must normalize the raw query itself, same as normalize_text
+    # would - it shouldn't rely on the caller having already done it.
+    results = search("  To, Be!!  ", index)
+
+    exact = [r for r in results if r.edit_type == "exact"]
+    assert any(r.offset == 0 for r in exact)
+
+
+def test_search_skips_fuzzy_variations_once_exact_has_enough_results():
+    sentences = [_make_sentence(f"a cat sat number {i}", sentence_id=i) for i in range(5)]
+    index = FakeIndex(sentences)
+
+    results = search("cat", index)
+
+    assert len({r.sentence.sentence_id for r in results}) == 5
+    assert all(r.edit_type == "exact" for r in results)
