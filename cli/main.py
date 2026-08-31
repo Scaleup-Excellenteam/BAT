@@ -1,13 +1,15 @@
 """Interactive CLI loop for the Sentence Autocomplete Engine."""
 
+import os
 from core.models import AutoCompleteData
 from core.normalizer import normalize_text
+from core.indexer import DataManager
 from core.scoring import rank_candidates
-
-import data_manager
-import search_engine
+import core.search_engine as search_engine
 
 RESET_TOKEN = "#"
+
+manager = DataManager()
 
 
 def format_result(rank: int, result: AutoCompleteData) -> str:
@@ -19,8 +21,9 @@ def format_result(rank: int, result: AutoCompleteData) -> str:
 
 def handle_query(query: str) -> None:
     normalized_query = normalize_text(query)
-    matches = search_engine.search(query)
-    results = rank_candidates(normalized_query, matches, data_manager.get_sentence)
+    # קריאה לפונקציית החיפוש
+    matches = search_engine.search(query, manager) if hasattr(search_engine, 'search') else []
+    results = rank_candidates(normalized_query, matches, manager.get_sentence)
 
     if not results:
         print("No matching sentences found.")
@@ -30,23 +33,36 @@ def handle_query(query: str) -> None:
         print(format_result(rank, result))
 
 
-def run_cli() -> None:
-    print("Sentence Autocomplete Engine. Type '#' to reset the session, Ctrl+C to exit.")
+def run_cli(data_dir: str = "Archive") -> None:
+    print("Loading archive and building index, please wait...")
+    if os.path.exists(data_dir):
+        manager.load_data(data_dir)
+    else:
+        print(f"Warning: Directory '{data_dir}' not found.")
+
+    print("Sentence Autocomplete Engine. Type '#' to reset the session, Ctrl+C to exit.\n")
+    
+    current_query = ""
+
     while True:
         try:
-            query = input("> ")
+            prompt = f"{current_query}" if current_query else "> "
+            user_input = input(prompt)
         except (EOFError, KeyboardInterrupt):
-            print()
+            print("\nExiting...")
             break
 
-        if query == RESET_TOKEN:
+        if RESET_TOKEN in user_input:
             print("Session reset.")
+            current_query = ""
             continue
 
-        if not query.strip():
+        current_query += user_input
+
+        if not current_query.strip():
             continue
 
-        handle_query(query)
+        handle_query(current_query)
 
 
 if __name__ == "__main__":
