@@ -1,107 +1,84 @@
-"""Scoring, deduplication and ranking for autocomplete candidates.
+"""Scoring and candidate ranking for auto-complete queries."""
 
-Score = (2 * matching_chars) - penalty, where only correctly matching
-characters earn points and at most one edit (substitution, insertion or
-deletion) separates the query from a candidate sentence.
-
-This module does not re-derive the alignment itself: it consumes the
-edit classification already produced by `search_engine.search(query)`.
-Each item yielded by that call must expose:
-
-    sentence_id:   int
-    edit_type:     "exact" | "substitution" | "insertion" | "deletion"
-    edit_position: int | None
-                   1-based position in the *normalized query* where the
-                   edit occurred (the substituted/inserted char, or the
-                   query position a missing char belongs at). None when
-                   edit_type == "exact".
-
-This is the contract `core/search_engine.py` (Developer 2) must satisfy.
-"""
-
-from typing import Callable, Dict, Iterable, List, Optional, Protocol
-
+from typing import Callable, Iterable, List, Optional
 from core.models import AutoCompleteData, SentenceRecord
 
-_SUBSTITUTION_PENALTIES = {1: 5, 2: 4, 3: 3, 4: 2}
-_INSERTION_DELETION_PENALTIES = {1: 10, 2: 8, 3: 6, 4: 4}
-_DEFAULT_SUBSTITUTION_PENALTY = 1
-_DEFAULT_INSERTION_DELETION_PENALTY = 2
+# טבלאות קנסות
+SUBSTITUTION_PENALTIES = {1: 5, 2: 4, 3: 3, 4: 2}
+INSERT_DELETE_PENALTIES = {1: 10, 2: 8, 3: 6, 4: 4}
 
 
-def _substitution_penalty(position: int) -> int:
-    return _SUBSTITUTION_PENALTIES.get(position, _DEFAULT_SUBSTITUTION_PENALTY)
+def get_penalty(error_type: Optional[str], error_index: Optional[int]) -> int:
+    """מחזיר את ערך הקנס בהתאם לסוג השגיאה ולמיקומה (1-based index)."""
+    if not error_type or error_index is None:
+        return 0
+
+    err = error_type.upper()
+    if err == "SUBSTITUTION":
+        return SUBSTITUTION_PENALTIES.get(error_index, 1)
+    if err in ("INSERTION", "DELETION"):
+        return INSERT_DELETE_PENALTIES.get(error_index, 2)
+    return 0
 
 
-def _insertion_deletion_penalty(position: int) -> int:
-    return _INSERTION_DELETION_PENALTIES.get(position, _DEFAULT_INSERTION_DELETION_PENALTY)
-
-
-class MatchCandidate(Protocol):
-    """Expected shape of items yielded by `search_engine.search(query)`."""
-
-    sentence_id: int
-    edit_type: str
-    edit_position: Optional[int]
-
-
-def score_match(query_length: int, edit_type: str, edit_position: Optional[int]) -> int:
-    """Score a single candidate match per the scoring spec.
-
-    matching_chars and the penalty bucket are fully determined by the
-    edit type, the query length and the 1-based position of the edit -
-    no text scanning required.
-    """
-    if edit_type == "exact":
-        return 2 * query_length
-
-    if edit_type == "substitution":
-        matching_chars = query_length - 1
-        return 2 * matching_chars - _substitution_penalty(edit_position)
-
-    if edit_type == "insertion":
-        # Query has one extra character the sentence does not have.
-        matching_chars = query_length - 1
-        return 2 * matching_chars - _insertion_deletion_penalty(edit_position)
-
-    if edit_type == "deletion":
-        # Query is missing a character the sentence has.
-        matching_chars = query_length
-        return 2 * matching_chars - _insertion_deletion_penalty(edit_position)
-
-    raise ValueError(f"Unknown edit_type: {edit_type!r}")
+def calculate_score(query_len: int, error_type: Optional[str], error_index: Optional[int]) -> int:
+    """מחשב ציון לפי הנוסחה: (matching_chars * 2) - penalty."""
+    if not error_type:
+        return query_len * 2
+    
+    matching_chars = max(0, query_len - 1)
+    penalty = get_penalty(error_type, error_index)
+    return (matching_chars * 2) - penalty
 
 
 def rank_candidates(
     normalized_query: str,
-    matches: Iterable[MatchCandidate],
-    get_sentence: Callable[[int], SentenceRecord],
-    limit: int = 5,
+    matches: Iterable,
+    get_sentence: Callable,
+    top_k: int = 5,
 ) -> List[AutoCompleteData]:
-    """Score, deduplicate and rank matches from `search_engine.search()`.
-
-    Deduplicates by completed sentence text (keeping the highest score),
-    sorts by score descending then lexicographically by sentence, and
-    returns at most `limit` results as `AutoCompleteData`.
-    """
-    query_length = len(normalized_query)
-    best_by_sentence: Dict[str, AutoCompleteData] = {}
+    """מדרג מועמדים, מסנן כפילויות ומחזיר את k התוצאות הטובות ביותר."""
+    best_results = {}
+    query_len = len(normalized_query)
 
     for match in matches:
-        record = get_sentence(match.sentence_id)
-        score = score_match(query_length, match.edit_type, match.edit_position)
+        # בדיקה אם המאצ' מחזיק כבר את הרשומה או מזהה
+        item = getattr(match, "sentence", None)
+        if item is None:
+            item = getattr(match, "sentence_id", None)
 
-        existing = best_by_sentence.get(record.original_text)
-        if existing is None or score > existing.score:
-            best_by_sentence[record.original_text] = AutoCompleteData(
+        # אם קיבלנו כבר SentenceRecord ישירות
+        if isinstance(item, SentenceRecord):
+            record = item
+        elif isinstance(item, int):
+            record = get_sentence(item)
+        else:
+            continue
+
+        if not record:
+            continue
+
+        error_type = getattr(match, "error_type", None)
+        error_index = getattr(match, "error_index", None)
+
+        score = calculate_score(query_len, error_type, error_index)
+
+        # סינון כפילויות ושמירת הציון הגבוה ביותר
+        if (
+            record.original_text not in best_results
+            or score > best_results[record.original_text].score
+        ):
+            best_results[record.original_text] = AutoCompleteData(
                 completed_sentence=record.original_text,
                 source_text=record.source_path,
                 offset=record.offset,
                 score=score,
             )
 
-    ranked = sorted(
-        best_by_sentence.values(),
-        key=lambda item: (-item.score, item.completed_sentence),
+    # מיון לפי ציון יורד ובמקרה שוויון לפי סדר אלפביתי
+    sorted_items = sorted(
+        best_results.values(),
+        key=lambda x: (-x.score, x.completed_sentence),
     )
-    return ranked[:limit]
+
+    return sorted_items[:top_k]
