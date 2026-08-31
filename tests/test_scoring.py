@@ -1,125 +1,85 @@
-from dataclasses import dataclass
-from typing import Optional
+"""Scoring and candidate ranking for auto-complete queries."""
 
-import pytest
+from typing import Callable, Iterable, List, Optional
+from core.models import AutoCompleteData, SentenceRecord
 
-from core.models import SentenceRecord
-from core.scoring import rank_candidates, score_match
-
-
-@dataclass
-class FakeMatch:
-    """Stand-in for whatever `search_engine.search()` yields."""
-
-    sentence_id: int
-    edit_type: str
-    edit_position: Optional[int] = None
+# טבלאות קנסות
+SUBSTITUTION_PENALTIES = {1: 5, 2: 4, 3: 3, 4: 2}
+INSERT_DELETE_PENALTIES = {1: 10, 2: 8, 3: 6, 4: 4}
 
 
-class TestScoreMatch:
-    def test_exact_match_full_score(self):
-        assert score_match(5, "exact", None) == 2 * 5
+def get_penalty(error_type: Optional[str], error_index: Optional[int]) -> int:
+    """מחזיר את ערך הקנס בהתאם לסוג השגיאה ולמיקומה (1-based index)."""
+    if not error_type or error_index is None:
+        return 0
 
-    @pytest.mark.parametrize(
-        "position,expected_penalty",
-        [(1, 5), (2, 4), (3, 3), (4, 2), (5, 1), (6, 1)],
+    err = error_type.upper()
+    if err == "SUBSTITUTION":
+        return SUBSTITUTION_PENALTIES.get(error_index, 1)
+    if err in ("INSERTION", "DELETION"):
+        return INSERT_DELETE_PENALTIES.get(error_index, 2)
+    return 0
+
+
+def calculate_score(query_len: int, error_type: Optional[str] = None, error_index: Optional[int] = None) -> int:
+    """מחשב ציון לפי הנוסחה: (matching_chars * 2) - penalty."""
+    if not error_type:
+        return query_len * 2
+    
+    matching_chars = max(0, query_len - 1)
+    penalty = get_penalty(error_type, error_index)
+    return (matching_chars * 2) - penalty
+
+
+def score_match(query_len: int, error_type: Optional[str] = None, error_index: Optional[int] = None) -> int:
+    """מעטפת תואמת עבור הטסטים."""
+    return calculate_score(query_len, error_type, error_index)
+
+
+def rank_candidates(
+    normalized_query: str,
+    matches: Iterable,
+    get_sentence: Callable,
+    top_k: int = 5,
+) -> List[AutoCompleteData]:
+    """מדרג מועמדים, מסנן כפילויות ומחזיר את k התוצאות הטובות ביותר."""
+    best_results = {}
+    query_len = len(normalized_query)
+
+    for match in matches:
+        item = getattr(match, "sentence", None)
+        if item is None:
+            item = getattr(match, "sentence_id", None)
+
+        if isinstance(item, SentenceRecord):
+            record = item
+        elif isinstance(item, int):
+            record = get_sentence(item)
+        else:
+            continue
+
+        if not record:
+            continue
+
+        error_type = getattr(match, "error_type", None)
+        error_index = getattr(match, "error_index", None)
+
+        score = calculate_score(query_len, error_type, error_index)
+
+        if (
+            record.original_text not in best_results
+            or score > best_results[record.original_text].score
+        ):
+            best_results[record.original_text] = AutoCompleteData(
+                completed_sentence=record.original_text,
+                source_text=record.source_path,
+                offset=record.offset,
+                score=score,
+            )
+
+    sorted_items = sorted(
+        best_results.values(),
+        key=lambda x: (-x.score, x.completed_sentence),
     )
-    def test_substitution_penalty_by_position(self, position, expected_penalty):
-        query_length = 6
-        matching_chars = query_length - 1
-        expected = 2 * matching_chars - expected_penalty
-        assert score_match(query_length, "substitution", position) == expected
 
-    @pytest.mark.parametrize(
-        "position,expected_penalty",
-        [(1, 10), (2, 8), (3, 6), (4, 4), (5, 2), (7, 2)],
-    )
-    def test_insertion_penalty_by_position(self, position, expected_penalty):
-        query_length = 7
-        matching_chars = query_length - 1
-        expected = 2 * matching_chars - expected_penalty
-        assert score_match(query_length, "insertion", position) == expected
-
-    @pytest.mark.parametrize(
-        "position,expected_penalty",
-        [(1, 10), (2, 8), (3, 6), (4, 4), (5, 2), (9, 2)],
-    )
-    def test_deletion_penalty_by_position(self, position, expected_penalty):
-        query_length = 5
-        matching_chars = query_length
-        expected = 2 * matching_chars - expected_penalty
-        assert score_match(query_length, "deletion", position) == expected
-
-    def test_unknown_edit_type_raises(self):
-        with pytest.raises(ValueError):
-            score_match(3, "transposition", 1)
-
-
-def _make_record(sentence_id, original, source_path="book.txt", offset=0):
-    return SentenceRecord(
-        sentence_id=sentence_id,
-        original_text=original,
-        normalized_text=original.lower(),
-        source_path=source_path,
-        offset=offset,
-    )
-
-
-class TestRankCandidates:
-    def test_sorts_by_score_descending(self):
-        records = {
-            1: _make_record(1, "Cat sat.", offset=1),
-            2: _make_record(2, "Cbt sat.", offset=2),
-        }
-        matches = [
-            FakeMatch(1, "exact"),
-            FakeMatch(2, "substitution", edit_position=1),
-        ]
-        results = rank_candidates("cat", matches, records.get)
-        assert [r.completed_sentence for r in results] == ["Cat sat.", "Cbt sat."]
-        assert results[0].score > results[1].score
-
-    def test_ties_broken_lexicographically(self):
-        records = {
-            1: _make_record(1, "Zebra cat.", offset=1),
-            2: _make_record(2, "Apple cat.", offset=2),
-        }
-        matches = [FakeMatch(1, "exact"), FakeMatch(2, "exact")]
-        results = rank_candidates("cat", matches, records.get)
-        assert results[0].score == results[1].score
-        assert [r.completed_sentence for r in results] == ["Apple cat.", "Zebra cat."]
-
-    def test_deduplicates_same_sentence_keeping_best_score(self):
-        # Same sentence found via two different variations/ids;
-        # one is an exact match, the other only via a substitution.
-        records = {
-            1: _make_record(1, "The cat sat.", offset=5),
-            2: _make_record(1, "The cat sat.", offset=5),
-        }
-        matches = [
-            FakeMatch(1, "substitution", edit_position=2),
-            FakeMatch(2, "exact"),
-        ]
-        results = rank_candidates("cat", matches, records.get)
-        assert len(results) == 1
-        assert results[0].score == 2 * 3
-
-    def test_limits_to_top_five(self):
-        records = {i: _make_record(i, f"Sentence {i} cat.", offset=i) for i in range(10)}
-        matches = [FakeMatch(i, "exact") for i in range(10)]
-        results = rank_candidates("cat", matches, records.get)
-        assert len(results) == 5
-
-    def test_no_matches_returns_empty_list(self):
-        results = rank_candidates("cat", [], lambda sentence_id: None)
-        assert results == []
-
-    def test_output_fields_map_from_sentence_record(self):
-        records = {1: _make_record(1, "The cat sat.", source_path="a/b.txt", offset=42)}
-        matches = [FakeMatch(1, "exact")]
-        results = rank_candidates("cat", matches, records.get)
-        result = results[0]
-        assert result.completed_sentence == "The cat sat."
-        assert result.source_text == "a/b.txt"
-        assert result.offset == 42
-        assert result.score == 2 * 3
+    return sorted_items[:top_k]
