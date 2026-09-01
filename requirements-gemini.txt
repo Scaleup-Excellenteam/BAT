@@ -1,0 +1,2 @@
+# Gemini voice input; no Cloud Speech-to-Text package or gcloud CLI required.
+google-genai>=1.50,<2

@@ -9,3 +9,17 @@ Archive.zip
 Archive/
 python-3.8.4-docs-text/
 *.txt
+!requirements-voice.txt
+!requirements-gemini.txt
+!requirements-dev.txt
+!examples/corpus/*.txt
+.venv/
+.env
+.env.*
+credentials/
+*credentials*.json
+*service-account*.json
+*.wav
+*.flac
+*.mp3
+*.m4a

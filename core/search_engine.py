@@ -59,6 +59,8 @@ def search(query: str, index: SupportsCandidateIndex) -> List[MatchCandidate]:
     """Find exact matches for query, falling back to 1-edit-fuzzy matches
     only if the exact match doesn't already cover MIN_RESULTS sentences."""
     normalized_query = normalize_text(query)
+    if not normalized_query:
+        return []
 
     candidates = _find_occurrences(normalized_query, index, "exact", None)
     if len({c.sentence_id for c in candidates}) >= MIN_RESULTS:

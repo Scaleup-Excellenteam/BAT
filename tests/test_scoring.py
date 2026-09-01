@@ -1,85 +1,50 @@
-"""Scoring and candidate ranking for auto-complete queries."""
+"""Regression tests for actual Part A scores across the full search pipeline."""
 
-from typing import Callable, Iterable, List, Optional
-from core.models import AutoCompleteData, SentenceRecord
+import tempfile
+import unittest
+from pathlib import Path
 
-# טבלאות קנסות
-SUBSTITUTION_PENALTIES = {1: 5, 2: 4, 3: 3, 4: 2}
-INSERT_DELETE_PENALTIES = {1: 10, 2: 8, 3: 6, 4: 4}
-
-
-def get_penalty(error_type: Optional[str], error_index: Optional[int]) -> int:
-    """מחזיר את ערך הקנס בהתאם לסוג השגיאה ולמיקומה (1-based index)."""
-    if not error_type or error_index is None:
-        return 0
-
-    err = error_type.upper()
-    if err == "SUBSTITUTION":
-        return SUBSTITUTION_PENALTIES.get(error_index, 1)
-    if err in ("INSERTION", "DELETION"):
-        return INSERT_DELETE_PENALTIES.get(error_index, 2)
-    return 0
+from core.indexer import DataManager
+from core.normalizer import normalize_text
+from core.scoring import calculate_score, rank_candidates
+from core.search_engine import search
 
 
-def calculate_score(query_len: int, error_type: Optional[str] = None, error_index: Optional[int] = None) -> int:
-    """מחשב ציון לפי הנוסחה: (matching_chars * 2) - penalty."""
-    if not error_type:
-        return query_len * 2
-    
-    matching_chars = max(0, query_len - 1)
-    penalty = get_penalty(error_type, error_index)
-    return (matching_chars * 2) - penalty
+class TestScoring(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        Path(self.directory.name, "hamlet.txt").write_text(
+            "To be or not to be, that is the question.\n", encoding="utf-8"
+        )
+        self.manager = DataManager()
+        self.manager.load_data(self.directory.name)
 
+    def test_documented_scores_use_real_search_metadata(self):
+        for query, expected in [("To be", 10), ("or Not", 12), ("to pe", 6), ("or knot", 8), ("or nt", 8)]:
+            with self.subTest(query=query):
+                matches = search(query, self.manager)
+                results = rank_candidates(normalize_text(query), matches, self.manager.get_sentence)
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0].score, expected)
+                self.assertEqual(results[0].offset, 1)
 
-def score_match(query_len: int, error_type: Optional[str] = None, error_index: Optional[int] = None) -> int:
-    """מעטפת תואמת עבור הטסטים."""
-    return calculate_score(query_len, error_type, error_index)
+    def test_exact_tag_keeps_all_matching_characters(self):
+        self.assertEqual(calculate_score(5, "exact", None), 10)
+        self.assertEqual(calculate_score(5, None, None), 10)
 
+    def test_insertion_keeps_existing_query_characters(self):
+        self.assertEqual(calculate_score(5, "insertion", 5), 8)
 
-def rank_candidates(
-    normalized_query: str,
-    matches: Iterable,
-    get_sentence: Callable,
-    top_k: int = 5,
-) -> List[AutoCompleteData]:
-    """מדרג מועמדים, מסנן כפילויות ומחזיר את k התוצאות הטובות ביותר."""
-    best_results = {}
-    query_len = len(normalized_query)
+    def test_exact_ranks_ahead_of_alphabetically_earlier_fuzzy_result(self):
+        Path(self.directory.name, "ranking.txt").write_text("a bat\nz cat\n", encoding="utf-8")
+        manager = DataManager()
+        manager.load_data(self.directory.name)
+        results = rank_candidates("cat", search("cat", manager), manager.get_sentence)
+        self.assertEqual(results[0].completed_sentence, "z cat")
+        self.assertGreater(results[0].score, next(r.score for r in results if r.completed_sentence == "a bat"))
 
-    for match in matches:
-        item = getattr(match, "sentence", None)
-        if item is None:
-            item = getattr(match, "sentence_id", None)
-
-        if isinstance(item, SentenceRecord):
-            record = item
-        elif isinstance(item, int):
-            record = get_sentence(item)
-        else:
-            continue
-
-        if not record:
-            continue
-
-        error_type = getattr(match, "error_type", None)
-        error_index = getattr(match, "error_index", None)
-
-        score = calculate_score(query_len, error_type, error_index)
-
-        if (
-            record.original_text not in best_results
-            or score > best_results[record.original_text].score
-        ):
-            best_results[record.original_text] = AutoCompleteData(
-                completed_sentence=record.original_text,
-                source_text=record.source_path,
-                offset=record.offset,
-                score=score,
-            )
-
-    sorted_items = sorted(
-        best_results.values(),
-        key=lambda x: (-x.score, x.completed_sentence),
-    )
-
-    return sorted_items[:top_k]
+    def test_normalized_empty_query_has_no_results(self):
+        for query in ("", "   ", "!!!"):
+            with self.subTest(query=query):
+                self.assertEqual(search(query, self.manager), [])

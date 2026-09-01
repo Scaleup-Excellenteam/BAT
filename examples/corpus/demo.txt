@@ -1,0 +1,3 @@
+To be or not to be, that is the question.
+To be prepared is to make a plan.
+Python sets store unique elements.

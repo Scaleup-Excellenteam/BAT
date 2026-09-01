@@ -23,10 +23,12 @@ def get_penalty(error_type: Optional[str], error_index: Optional[int]) -> int:
 
 def calculate_score(query_len: int, error_type: Optional[str], error_index: Optional[int]) -> int:
     """מחשב ציון לפי הנוסחה: (matching_chars * 2) - penalty."""
-    if not error_type:
+    if not error_type or error_type.upper() == "EXACT":
         return query_len * 2
     
-    matching_chars = max(0, query_len - 1)
+    # Insertion adds a missing character to the query; all its existing
+    # characters still match. Substitution/deletion lose one query character.
+    matching_chars = query_len if error_type.upper() == "INSERTION" else max(0, query_len - 1)
     penalty = get_penalty(error_type, error_index)
     return (matching_chars * 2) - penalty
 
@@ -58,8 +60,8 @@ def rank_candidates(
         if not record:
             continue
 
-        error_type = getattr(match, "error_type", None)
-        error_index = getattr(match, "error_index", None)
+        error_type = getattr(match, "edit_type", getattr(match, "error_type", None))
+        error_index = getattr(match, "edit_position", getattr(match, "error_index", None))
 
         score = calculate_score(query_len, error_type, error_index)
 

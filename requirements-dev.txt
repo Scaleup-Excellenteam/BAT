@@ -1,0 +1,3 @@
+-r requirements-voice.txt
+-r requirements-gemini.txt
+pytest>=8,<10

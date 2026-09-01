@@ -1,0 +1,2 @@
+# Optional: basic typed search uses only the Python standard library.
+google-cloud-speech>=2.26,<3
