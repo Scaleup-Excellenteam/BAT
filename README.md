@@ -59,20 +59,54 @@ $$\text{Score} = (2 \times \text{matching\_chars}) - \text{penalty}$$
 BAT/
 ├── core/
 │   ├── __init__.py
-│   ├── models.py          # Data definitions (AutoCompleteData, SentenceRecord)
-│   ├── normalizer.py      # Normalization logic
-│   ├── indexer.py         # Offline file loading and N-gram inverted indexing
-│   ├── generator.py       # 1-edit variations generation (sub, del, ins)
-│   ├── scoring.py         # Scoring and penalty evaluator
-│   └── search_engine.py   # Online query coordinator (combines exact + fuzzy)
+│   ├── models.py             # Data definitions (AutoCompleteData, SentenceRecord)
+│   ├── normalizer.py         # Normalization logic
+│   ├── indexer.py            # Offline file loading and N-gram inverted indexing
+│   ├── generator.py          # 1-edit variations generation (sub, del, ins)
+│   ├── scoring.py            # Scoring and penalty evaluator
+│   ├── search_engine.py      # Online query coordinator (combines exact + fuzzy)
+│   ├── snapshot_store.py     # ZDT: offline build -> versioned snapshot dir -> atomic pointer
+│   └── snapshot_watcher.py   # ZDT: online-side hot reload on pointer change
 ├── cli/
 │   ├── __init__.py
-│   └── main.py            # CLI user interface & interactive loop
+│   ├── main.py             # CLI user interface & interactive loop
+│   └── build_snapshot.py   # ZDT: offline entrypoint - build + publish a snapshot
 ├── tests/
 │   ├── test_normalizer.py
 │   ├── test_scoring.py
 │   └── test_search.py
 └── README.md
+```
 
+---
 
+## 🔄 Zero-Downtime Snapshot Hand-off (ZDT)
 
+Offline indexing and online serving are decoupled through the filesystem, so a
+new data source can be indexed and go live without ever stopping the running
+service:
+
+1. **Offline build** - `python -m cli.build_snapshot <root_dir> <snapshots_dir>`
+   indexes `root_dir` into a brand-new, timestamped directory under
+   `snapshots_dir` (e.g. `snapshots_dir/20260901T120000Z/`). It never touches
+   any existing snapshot.
+2. **Validate, then publish** - once the build has at least one usable
+   sentence, its `CURRENT` pointer file is updated to name the new snapshot,
+   written via write-to-a-temp-file-then-`os.replace` so the flip is atomic.
+   A build that produces no usable data is refused and nothing is published.
+3. **Online adoption** - a service started with `snapshots_dir` (or the
+   `BAT_SNAPSHOTS_DIR` env var) serves lexical search through a
+   `SnapshotWatcher` (`core/snapshot_watcher.py`). Before each query it
+   re-reads the `CURRENT` pointer; if it changed, it loads the new snapshot
+   into a fresh index and swaps it in with a single attribute assignment -
+   any request already in flight keeps reading the old snapshot object
+   (never mutated in place), and the very next query is served from the new
+   one. No restart, no dropped requests.
+
+```bash
+# Add a data source and publish it live, while the CLI keeps running elsewhere:
+python -m cli.build_snapshot ./new_articles ./snapshots
+
+# Start (or already be running) the online side against the same snapshots dir:
+BAT_SNAPSHOTS_DIR=./snapshots python main.py
+```
