@@ -9,6 +9,8 @@ from core.models import AutoCompleteData
 from core.normalizer import normalize_text
 from core.indexer import DataManager
 from core.scoring import rank_candidates
+from core.snapshot_store import read_current_snapshot_id
+from core.snapshot_watcher import SnapshotWatcher
 import core.search_engine as search_engine
 
 from services.gemini_service import GeminiService
@@ -20,6 +22,7 @@ from services.speech import VoiceInputError
 RESET_TOKEN = "#"
 SEMANTIC_PREFIX = "!s "
 VOICE_PREFIX = "!v "
+SNAPSHOTS_DIR_ENV = "BAT_SNAPSHOTS_DIR"
 
 # Initialize core services
 manager = DataManager()
@@ -54,6 +57,12 @@ def format_semantic_result(rank: int, result: SemanticMatchResult) -> str:
 
 def handle_local_query(query: str) -> None:
     """Handle standard Part A lexical matching from local corpus."""
+    # ZDT: cheap on every query - if `manager` is a SnapshotWatcher and the
+    # offline side has published a new snapshot since we last loaded, swap
+    # it in now. If it hasn't changed, this is just one small file read.
+    if hasattr(manager, "refresh"):
+        manager.refresh()
+
     normalized_query = normalize_text(query)
     raw_matches = search_engine.search(query, manager) if hasattr(search_engine, "search") else []
 
@@ -151,11 +160,27 @@ def handle_query(query: str) -> None:
         handle_local_query(query)
 
 
-def run_cli(data_dir: str = "Archive") -> None:
-    global CURRENT_MODE, AI_CONTEXT, SPEECH_LANG
+def run_cli(data_dir: str = "Archive", snapshots_dir: Optional[str] = None) -> None:
+    """Start the interactive loop.
+
+    ZDT: if `snapshots_dir` (or the `BAT_SNAPSHOTS_DIR` env var) is set,
+    lexical search is served from the snapshot published there instead of
+    `data_dir`, and `manager` becomes a `SnapshotWatcher` that live-reloads
+    whenever the offline side (`cli/build_snapshot.py`) publishes a new
+    snapshot - no restart of this process required.
+    """
+    global CURRENT_MODE, AI_CONTEXT, SPEECH_LANG, manager
+
+    snapshots_dir = snapshots_dir or os.getenv(SNAPSHOTS_DIR_ENV)
 
     print("Loading archive and initializing engines, please wait...")
-    if os.path.exists(data_dir) or os.path.exists(manager.cache_file):
+    if snapshots_dir:
+        if read_current_snapshot_id(snapshots_dir) is None:
+            print(f"Warning: no published snapshot found in '{snapshots_dir}'.")
+        else:
+            manager = SnapshotWatcher(snapshots_dir)
+            print(f"[ZDT] Serving snapshot '{manager.current_snapshot_id}' from '{snapshots_dir}'.")
+    elif os.path.exists(data_dir) or os.path.exists(manager.cache_file):
         manager.load_data(data_dir)
         semantic_engine._load_from_cache()
     else:
