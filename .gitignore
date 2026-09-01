@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.venv/
 venv/
 env/
 .vscode/
@@ -9,3 +10,4 @@ Archive.zip
 Archive/
 python-3.8.4-docs-text/
 *.txt
+.env
