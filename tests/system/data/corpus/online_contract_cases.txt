@@ -1,0 +1,10 @@
+qvwxabcdef
+Inside-word probe prefixlmnrstuvsuffix.
+Boundary probe concludes with endboundaryuniquetoken
+wholelineuniquetoken
+Normalization marker: To BE, or NOT to be!!!
+Ambiguity probe contains boookkeeperuniquetoken.
+Competing probe competitxonuniquetoken then competitionuniquetoken.
+Only result contains uniquelysingleresulttoken.
+Duplicate occurrence universaltwinduplicatetoken.
+Duplicate occurrence universaltwinduplicatetoken.

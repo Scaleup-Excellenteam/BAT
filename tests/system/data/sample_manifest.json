@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "max_non_empty_lines_per_file": 500,
+  "files": [
+    "online_contract_cases.txt",
+    "0130903086.txt",
+    "python-3.8.4-docs-text/library/base64.txt",
+    "python-3.8.4-docs-text/library/profile.txt",
+    "rfc7501.txt",
+    "rfc7668.txt",
+    "rfc7835.txt",
+    "rfc8003.txt",
+    "rfc8170.txt",
+    "rfc8337.txt",
+    "userguide.txt"
+  ]
+}
