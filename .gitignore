@@ -9,3 +9,9 @@ Archive.zip
 Archive/
 python-3.8.4-docs-text/
 *.txt
+.env
+*.envlexical_index.pkl 
+semantic_cache.pkl 
+temp_recording.wav 
+*.pkl 
+*.wav 

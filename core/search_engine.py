@@ -1,41 +1,17 @@
-"""Online query coordinator: combines exact and 1-edit fuzzy matching.
+"""Online query coordinator: combines exact and 1-edit fuzzy matching with TypoCache prioritization."""
 
-Expected contract from core.indexer.DataManager (built during the offline
-phase - see core/indexer.py on feature/offline-indexer):
-
-    index.get_candidate_ids(query: str) -> Set[int]
-        Sentence ids that might contain `query` as a substring. This is a
-        narrowing filter only (internally keyed off query's first few
-        characters, with a full-scan fallback for short queries) - it is
-        NOT a guarantee that the full string matches, so search_engine
-        still confirms every candidate with an exact substring check
-        (and that's also how it recovers the match offset).
-
-    index.get_sentence(sentence_id: int) -> Optional[SentenceRecord]
-        O(1) lookup of a sentence by id.
-
-search_engine does not deduplicate or rank candidates - a query and its
-1-edit variations can match the same sentence more than once (e.g. via two
-different edits, or the same edit at different offsets). Deduplication,
-scoring and top-5 ranking happen downstream in core.scoring / cli.
-
-Fuzzy variations are only generated and checked if the exact match alone
-doesn't already cover MIN_RESULTS distinct sentences - exact matches always
-score at least as high as a fuzzy match of the same query, so there's no
-ranking benefit to paying for 1-edit variation generation once we already
-have enough.
-
-MatchCandidate's shape (sentence_id, edit_type, edit_position) is the
-contract core.scoring.rank_candidates consumes - see core/scoring.py.
-"""
 from dataclasses import dataclass
 from typing import List, Optional, Protocol, Set
 
 from core.generator import generate_variations
 from core.models import SentenceRecord
 from core.normalizer import normalize_text
+from core.typo_cache import TypoCache
 
 MIN_RESULTS = 5
+
+# מופע גלובלי של שמירת ותיעדוף תיקוני הקלדה
+typo_cache = TypoCache()
 
 
 class SupportsCandidateIndex(Protocol):
@@ -51,23 +27,31 @@ class MatchCandidate:
     sentence_id: int
     offset: int
     match_length: int
-    edit_type: str                # "exact" | "substitution" | "insertion" | "deletion"
-    edit_position: Optional[int]  # 1-based position in the query; None for exact matches
+    edit_type: str
+    edit_position: Optional[int]
+    matched_variant: Optional[str] = None  # מעקב אחר הווריאציה שנמצאה בפועל
 
 
 def search(query: str, index: SupportsCandidateIndex) -> List[MatchCandidate]:
-    """Find exact matches for query, falling back to 1-edit-fuzzy matches
-    only if the exact match doesn't already cover MIN_RESULTS sentences."""
+    """Find exact matches, falling back to 1-edit variations prioritized by TypoCache."""
     normalized_query = normalize_text(query)
 
     candidates = _find_occurrences(normalized_query, index, "exact", None)
     if len({c.sentence_id for c in candidates}) >= MIN_RESULTS:
         return candidates
 
-    for variation in generate_variations(normalized_query):
-        candidates.extend(
-            _find_occurrences(variation.text, index, variation.edit_type, variation.position)
+    variations = generate_variations(normalized_query)
+    # מתן עדיפות לשגיאות שנלמדו מחיפושים קודמים
+    prioritized_variations = typo_cache.prioritize(normalized_query, variations)
+
+    for variation in prioritized_variations:
+        new_matches = _find_occurrences(
+            variation.text, index, variation.edit_type, variation.position
         )
+        if new_matches:
+            # שמירת השגיאה והתיקון לחיפושים הבאים
+            typo_cache.record_match(normalized_query, variation.text)
+            candidates.extend(new_matches)
 
     return candidates
 
@@ -81,7 +65,16 @@ def _find_occurrences(
         if sentence is None:
             continue
         for offset in _find_all_offsets(sentence.normalized_text, text):
-            matches.append(MatchCandidate(sentence_id, offset, len(text), edit_type, edit_position))
+            matches.append(
+                MatchCandidate(
+                    sentence_id=sentence_id,
+                    offset=offset,
+                    match_length=len(text),
+                    edit_type=edit_type,
+                    edit_position=edit_position,
+                    matched_variant=text,
+                )
+            )
     return matches
 
 
